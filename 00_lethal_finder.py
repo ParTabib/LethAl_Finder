@@ -11,6 +11,7 @@
 #   Step 1 — Collect HET sites     (01_collect_het_sites.sh)
 #   Step 2 — Build genotype matrix (02_build_matrix.py)
 #   Step 3 — Filter lethal candidates (03_filter_lethal.py)
+#   Step 4 — Filter by genomic region  (04_filter_regions.py, optional)
 #
 # Usage:
 #   python3 00_LethAl_Finder.py \
@@ -26,11 +27,12 @@
 #   --skip-step2                 Skip Step 2 (matrix already built)
 #
 # Output files (all in --output-dir):
-#   het_sites_<threshold>.txt              All unique HET site IDs
-#   master_genotype_matrix_<threshold>.tsv Full cross-population matrix
-#   lethal_candidates_<threshold>.tsv      Lethal candidate sites
-#   lethal_hits_<threshold>.tsv            Per-sample carrier events
-#   logs/                                  All step logs
+#   het_sites_<threshold>.txt                   All unique HET site IDs
+#   master_genotype_matrix_<threshold>.tsv      Full cross-population matrix
+#   lethal_candidates_<threshold>.tsv           Lethal candidate sites
+#   lethal_hits_<threshold>.tsv                 Per-sample carrier events
+#   lethal_candidates_<threshold>_regional.tsv  Region-filtered candidates (if --regions used)
+#   logs/                                       All step logs
 # =============================================================================
 
 import os
@@ -55,6 +57,7 @@ Examples:
   python3 00_LethAl_Finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --cores 4
   python3 00_LethAl_Finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --skip-step1
   python3 00_LethAl_Finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --sample-sheet samples.tsv
+  python3 00_LethAl_Finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --regions genome.gff --feature exon
     """
 )
 parser.add_argument("--input-dir",    required=True,
@@ -75,6 +78,14 @@ parser.add_argument("--skip-step1",   action="store_true",
                     help="Skip Step 1 — use existing het_sites file in output directory")
 parser.add_argument("--skip-step2",   action="store_true",
                     help="Skip Step 2 — use existing genotype matrix in output directory")
+parser.add_argument("--skip-step3",   action="store_true",
+                    help="Skip Step 3 — use existing lethal candidates file in output directory")
+parser.add_argument("--regions",      default=None,
+                    help="Optional BED/GFF/GFF3/GTF file to filter lethal candidates "
+                         "to specific genomic regions (e.g. exons)")
+parser.add_argument("--feature",      type=str, default="exon",
+                    help="Feature type to extract from GFF/GTF files "
+                         "(default: exon). Ignored for BED files.")
 args = parser.parse_args()
 
 
@@ -90,18 +101,23 @@ CORES        = args.cores
 SAMPLE_SHEET = args.sample_sheet
 SKIP_STEP1   = args.skip_step1
 SKIP_STEP2   = args.skip_step2
+SKIP_STEP3   = args.skip_step3
+REGIONS      = args.regions
+FEATURE      = args.feature
 
 LOG_DIR        = os.path.join(OUTPUT_DIR, "logs")
 HET_SITES_FILE = os.path.join(OUTPUT_DIR, f"het_sites_{THRESHOLD}.txt")
 MATRIX_FILE    = os.path.join(OUTPUT_DIR, f"master_genotype_matrix_{THRESHOLD}.tsv")
 CANDIDATES_OUT = os.path.join(OUTPUT_DIR, f"lethal_candidates_{THRESHOLD}.tsv")
 HITS_OUT       = os.path.join(OUTPUT_DIR, f"lethal_hits_{THRESHOLD}.tsv")
+REGIONAL_OUT = os.path.join(OUTPUT_DIR, f"lethal_candidates_{THRESHOLD}_regional.tsv")
 
 # Locate step scripts relative to this master script
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 STEP1_SCRIPT = os.path.join(SCRIPT_DIR, "01_collect_het_sites.sh")
 STEP2_SCRIPT = os.path.join(SCRIPT_DIR, "02_build_matrix.py")
 STEP3_SCRIPT = os.path.join(SCRIPT_DIR, "03_filter_lethal.py")
+STEP4_SCRIPT = os.path.join(SCRIPT_DIR, "04_filter_regions.py")
 
 # Track timing per step
 STEP_TIMES = {}
@@ -171,7 +187,7 @@ def validate_inputs():
     if SAMPLE_SHEET and not os.path.isfile(SAMPLE_SHEET):
         errors.append(f"Sample sheet not found: {SAMPLE_SHEET}")
 
-    for script in [STEP1_SCRIPT, STEP2_SCRIPT, STEP3_SCRIPT]:
+    for script in [STEP1_SCRIPT, STEP2_SCRIPT, STEP3_SCRIPT, STEP4_SCRIPT]:
         if not os.path.isfile(script):
             errors.append(f"Step script not found: {script}")
 
@@ -186,6 +202,10 @@ def validate_inputs():
     if SKIP_STEP2 and not os.path.isfile(MATRIX_FILE):
         errors.append(f"--skip-step2 set but matrix file not found: "
                       f"{MATRIX_FILE}")
+
+    if SKIP_STEP3 and not os.path.isfile(CANDIDATES_OUT):
+        errors.append(f"--skip-step3 set but candidates file not found: "
+                      f"{CANDIDATES_OUT}")
 
     if errors:
         print("\n[ERROR] Validation failed:")
@@ -290,6 +310,17 @@ def run_step3():
     ]
     run_step("Step 3", cmd)
 
+def run_step4():
+    """Call 04_filter_regions.py with the required arguments."""
+    cmd = [
+        "python3", STEP4_SCRIPT,
+        THRESHOLD,
+        OUTPUT_DIR,
+        REGIONS,
+        "--feature", FEATURE,
+        "--cores",   str(CORES),
+    ]
+    run_step("Step 4", cmd)
 
 # ---------------------------------------------------------------------------
 # Final Summary
@@ -307,7 +338,7 @@ def print_summary():
     print("")
 
     print("  Output files:")
-    for f in [HET_SITES_FILE, MATRIX_FILE, CANDIDATES_OUT, HITS_OUT]:
+    for f in [HET_SITES_FILE, MATRIX_FILE, CANDIDATES_OUT, HITS_OUT, REGIONAL_OUT]:
         if os.path.isfile(f):
             size = os.path.getsize(f) / 1e9
             print(f"    {os.path.basename(f):<45} {size:.2f} GB")
@@ -344,6 +375,9 @@ def main():
           f"{SAMPLE_SHEET if SAMPLE_SHEET else 'Auto-detect'}")
     print(f"  Skip Step 1      : {SKIP_STEP1}")
     print(f"  Skip Step 2      : {SKIP_STEP2}")
+    print(f"  Skip Step 3      : {SKIP_STEP3}")
+    print(f"  Regions file     : {REGIONS if REGIONS else 'Not provided'}")
+    print(f"  Feature type     : {FEATURE}")
     print(f"  Timestamp        : {datetime.datetime.now()}")
 
     # Validate all inputs
@@ -373,7 +407,16 @@ def main():
         run_step2()
 
     # Step 3 — Filter lethal candidates
-    run_step3()
+    if SKIP_STEP3:
+        banner("Step 3 — Filter Lethal Candidates")
+        log(f"Skipping — using existing file: {CANDIDATES_OUT}")
+        STEP_TIMES["Step 3"] = datetime.timedelta(0)
+    else:
+        run_step3()
+
+    # Step 4 — Filter by genomic region (optional)
+    if REGIONS:
+        run_step4()  
 
     # Final summary
     print_summary()
