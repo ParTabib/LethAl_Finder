@@ -8,7 +8,7 @@ Developed as part of a special course project under the **Biodiversity and Extin
 
 ## How It Works
 
-The pipeline operates in three steps:
+The pipeline operates in four steps:
 
 **Step 1 — Collect Heterozygous Sites**
 Scans all HEARTY output files across the population and collects every genomic site where at least one individual is heterozygous at the given frequency threshold. Outputs a sorted unique list of site IDs.
@@ -18,6 +18,9 @@ Using the HET site list from Step 1, extracts the base call for every individual
 
 **Step 3 — Filter Lethal Candidates**
 Applies the lethal recessive selection logic row by row. For each HET site, the allele pair is extracted (e.g. `AC` → `A` and `C`) and both corresponding homozygotes (`AA` and `CC`) are looked up across the population. If either homozygote is absent, the site is flagged as a lethal candidate.
+
+**Step 4 — Filter by Genomic Region (optional)**
+Takes the lethal candidate sites from Step 3 and filters them to only those overlapping user-defined genomic regions (e.g. exons, CDS, promoters). Accepts BED, GFF, GFF3, and GTF formats — both compressed (`.gz`) and uncompressed. For GFF/GTF files, a specific feature type can be selected (default: `exon`). This step is only run if `--regions` is provided.
 
 ---
 
@@ -91,6 +94,9 @@ python3 00_lethal_finder.py \
 | `--sample-sheet` | No | Auto-detect | TSV file mapping filenames to sample IDs |
 | `--skip-step1` | No | False | Skip Step 1 — use existing HET sites file |
 | `--skip-step2` | No | False | Skip Step 2 — use existing genotype matrix |
+| `--skip-step3` | No | False | Skip Step 3 — use existing lethal candidates file |
+| `--regions` | No | — | BED/GFF/GFF3/GTF file to filter candidates to specific regions (triggers Step 4) |
+| `--feature` | No | `exon` | Feature type to extract from GFF/GTF files (ignored for BED) |
 
 ### Examples
 
@@ -106,6 +112,12 @@ python3 00_lethal_finder.py --input-dir /data/hearty --output-dir /results --thr
 
 # Provide custom sample names via sample sheet
 python3 00_lethal_finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --sample-sheet samples.tsv
+
+# Run with regional filtering using a GFF file (Step 4)
+python3 00_lethal_finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --regions genome.gff --feature exon
+
+# Run only Step 4 on existing results
+python3 00_lethal_finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --skip-step1 --skip-step2 --skip-step3 --regions genome.gff
 ```
 
 ### Sample sheet format
@@ -132,6 +144,7 @@ All output files are written to `--output-dir`:
 | `master_genotype_matrix_<threshold>.tsv` | Full cross-population genotype matrix (rows = sites, columns = individuals) |
 | `lethal_candidates_<threshold>.tsv` | Subset of the matrix containing only lethal candidate sites |
 | `lethal_hits_<threshold>.tsv` | One row per individual carrying a HET genotype at a lethal site |
+| `lethal_candidates_<threshold>_regional.tsv` | Lethal candidates overlapping user-defined regions (only if `--regions` used) |
 | `logs/` | Log files for each step |
 
 ### lethal_hits format
@@ -161,6 +174,7 @@ Memory and runtime scale with the number of HET sites and the number of individu
 | Step 1 | ~4 hours |
 | Step 2 | ~8 hours |
 | Step 3 | ~30 minutes |
+| Step 4 | ~30 minutes (optional) |
 | **Total** | **~12.5 hours** |
 
 For HPC clusters, the pipeline is compatible with any workload manager (SLURM, PBS, LSF). Simply wrap the run command in your cluster submission script and request resources accordingly.
@@ -169,12 +183,13 @@ For HPC clusters, the pipeline is compatible with any workload manager (SLURM, P
 
 ## Parallelization
 
-Steps 1 and 2 support multi-core parallelization via `--cores`:
+Steps 1, 2, and 4 support multi-core parallelization via `--cores`:
 
 - **Step 1** — sample files scanned simultaneously
 - **Step 2 Phase 2** — sample files processed simultaneously (each core holds its own copy of the HET set in memory)
 - **Step 2 Phase 3** — temporary files sorted simultaneously
 - **Step 2 Phase 4** — merge is inherently sequential
+- **Step 4** — candidates file split into N chunks and filtered simultaneously
 
 ---
 
