@@ -57,6 +57,13 @@ parser.add_argument(
     type=str,
     help="Directory containing the genotype matrix and where output will be written"
 )
+parser.add_argument(
+    "--min-carriers",
+    type=int,
+    default=1,
+    help="Minimum number of individuals carrying the HET genotype at a site "
+         "for it to be considered a lethal candidate (default: 1)"
+)
 args = parser.parse_args()
 
 
@@ -66,6 +73,7 @@ args = parser.parse_args()
 
 THRESHOLD      = str(float(args.threshold))
 OUTPUT_DIR     = args.output_dir
+MIN_CARRIERS   = args.min_carriers
 LOG_DIR        = os.path.join(OUTPUT_DIR, "logs")
 MATRIX_IN      = os.path.join(OUTPUT_DIR, f"master_genotype_matrix_{THRESHOLD}.tsv")
 CANDIDATES_OUT = os.path.join(OUTPUT_DIR, f"lethal_candidates_{THRESHOLD}.tsv")
@@ -205,6 +213,11 @@ def filter_lethal_candidates():
 
             evaluated += 1
 
+            # Apply minimum carrier filter before lethal logic
+            carrier_count = sum(1 for g in genotypes if is_valid(g) and is_heterozygous(g))
+            if carrier_count < MIN_CARRIERS:
+                continue
+
             # Apply lethal candidate logic
             if is_lethal_candidate(genotypes):
                 candidates += 1
@@ -252,6 +265,7 @@ def main():
     print(" Step 3 — Filter Lethal Candidates")
     print("=============================================")
     print(f"Threshold        : {THRESHOLD}")
+    print(f"Min carriers     : {MIN_CARRIERS}")
     print(f"Matrix input     : {MATRIX_IN}")
     print(f"Candidates output: {CANDIDATES_OUT}")
     print(f"Hits output      : {HITS_OUT}")
@@ -267,6 +281,7 @@ def main():
     print(" Step 3 Complete")
     print("=============================================")
     print(f"Sites evaluated      : {evaluated:,}")
+    print(f"Min carriers filter  : {MIN_CARRIERS}")
     print(f"Lethal candidates    : {candidates:,} "
           f"({100*candidates/evaluated:.2f}% of evaluated sites)")
     print(f"Total HET hits       : {total_hits:,}")

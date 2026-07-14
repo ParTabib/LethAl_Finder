@@ -78,6 +78,9 @@ parser.add_argument("--skip-step1",   action="store_true",
                     help="Skip Step 1 — use existing het_sites file in output directory")
 parser.add_argument("--skip-step2",   action="store_true",
                     help="Skip Step 2 — use existing genotype matrix in output directory")
+parser.add_argument("--min-carriers", type=int, default=1,
+                    help="Minimum number of individuals carrying the HET genotype at a site "
+                         "for it to be considered a lethal candidate (default: 1)")
 parser.add_argument("--skip-step3",   action="store_true",
                     help="Skip Step 3 — use existing lethal candidates file in output directory")
 parser.add_argument("--regions",      default=None,
@@ -102,6 +105,7 @@ SAMPLE_SHEET = args.sample_sheet
 SKIP_STEP1   = args.skip_step1
 SKIP_STEP2   = args.skip_step2
 SKIP_STEP3   = args.skip_step3
+MIN_CARRIERS = args.min_carriers
 REGIONS      = args.regions
 FEATURE      = args.feature
 
@@ -307,6 +311,7 @@ def run_step3():
         "python3", STEP3_SCRIPT,
         THRESHOLD,
         OUTPUT_DIR,
+        "--min-carriers", str(MIN_CARRIERS),
     ]
     run_step("Step 3", cmd)
 
@@ -373,6 +378,7 @@ def main():
     print(f"  Cores            : {CORES}")
     print(f"  Sample sheet     : "
           f"{SAMPLE_SHEET if SAMPLE_SHEET else 'Auto-detect'}")
+    print(f"  Min carriers     : {MIN_CARRIERS}")
     print(f"  Skip Step 1      : {SKIP_STEP1}")
     print(f"  Skip Step 2      : {SKIP_STEP2}")
     print(f"  Skip Step 3      : {SKIP_STEP3}")
