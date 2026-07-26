@@ -31,6 +31,8 @@
 #
 # Usage:
 #   python3 03_filter_lethal.py <threshold> <output_dir>
+#                               [--min-carriers <n>]
+#                               [--max-alleles <n>]
 #   e.g. python3 03_filter_lethal.py 0.25 /results
 # =============================================================================
 
@@ -64,6 +66,12 @@ parser.add_argument(
     help="Minimum number of individuals carrying the HET genotype at a site "
          "for it to be considered a lethal candidate (default: 1)"
 )
+parser.add_argument(
+    "--max-alleles",
+    type=int,
+    default=None,
+    help="Maximum number of unique alleles allowed across all individuals at a site."
+)
 args = parser.parse_args()
 
 
@@ -74,11 +82,13 @@ args = parser.parse_args()
 THRESHOLD      = str(float(args.threshold))
 OUTPUT_DIR     = args.output_dir
 MIN_CARRIERS   = args.min_carriers
+MAX_ALLELES    = args.max_alleles 
 LOG_DIR        = os.path.join(OUTPUT_DIR, "logs")
 MATRIX_IN      = os.path.join(OUTPUT_DIR, f"master_genotype_matrix_{THRESHOLD}.tsv")
 CANDIDATES_OUT = os.path.join(OUTPUT_DIR, f"lethal_candidates_{THRESHOLD}.tsv")
 HITS_OUT       = os.path.join(OUTPUT_DIR, f"lethal_hits_{THRESHOLD}.tsv")
 CHUNK_SIZE     = 100_000  # rows per write chunk
+
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +181,10 @@ def filter_lethal_candidates():
     """
     Stream through the genotype matrix row by row.
     Apply the lethal candidate logic to each site.
+    
+    Filters applied before lethal logic:
+        - --min-carriers: site must have at least N individuals carrying HET genotype
+        - --max-alleles: site must have no more than N unique alleles across all individuals
 
     For each lethal candidate site:
         - Write the full row to lethal_candidates output
@@ -217,7 +231,12 @@ def filter_lethal_candidates():
             carrier_count = sum(1 for g in genotypes if is_valid(g) and is_heterozygous(g))
             if carrier_count < MIN_CARRIERS:
                 continue
-
+            
+            # Apply Maximum allele filter before lethal logic
+            alleles = set(g[i] for g in genotypes if is_valid(g) for i in range(2))
+            if MAX_ALLELES is not None and len(alleles) > MAX_ALLELES:
+                continue
+            
             # Apply lethal candidate logic
             if is_lethal_candidate(genotypes):
                 candidates += 1
@@ -266,6 +285,7 @@ def main():
     print("=============================================")
     print(f"Threshold        : {THRESHOLD}")
     print(f"Min carriers     : {MIN_CARRIERS}")
+    print(f"Max alleles      : {MAX_ALLELES}")
     print(f"Matrix input     : {MATRIX_IN}")
     print(f"Candidates output: {CANDIDATES_OUT}")
     print(f"Hits output      : {HITS_OUT}")
@@ -282,6 +302,7 @@ def main():
     print("=============================================")
     print(f"Sites evaluated      : {evaluated:,}")
     print(f"Min carriers filter  : {MIN_CARRIERS}")
+    print(f"Max alleles filter   : {MAX_ALLELES}")
     print(f"Lethal candidates    : {candidates:,} "
           f"({100*candidates/evaluated:.2f}% of evaluated sites)")
     print(f"Total HET hits       : {total_hits:,}")
