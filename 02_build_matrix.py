@@ -22,6 +22,7 @@
 #   - UNKNOWN base calls are normalized to NA
 #   - Sites where fewer than --min-coverage percent of samples have data
 #     are filtered out (default: 15%)
+#   - Base calls with read depth below --min-depth are written as NA (default: 10)
 #
 # This script is called by the LethAl Finder master script and should not
 # be run directly unless you know what you are doing.
@@ -31,6 +32,7 @@
 #                              [--min-coverage <percent>]
 #                              [--cores <n>]
 #                              [--sample-sheet <file>]
+#                              [--min-depth <n>]
 # =============================================================================
 
 import sys
@@ -59,6 +61,8 @@ parser.add_argument("--cores",     type=int, default=1,
                     help="Number of CPU cores for parallelization (default: 1)")
 parser.add_argument("--sample-sheet", type=str, default=None,
                     help="Optional TSV: filename TAB sample_id")
+parser.add_argument("--min-depth", type=int, default=10,
+                    help="Minimum read depth (totDepth) required at a site for a sample's base call to be included in the matrix. Calls below this threshold are written as NA (default: 10)")
 args = parser.parse_args()
 
 
@@ -72,6 +76,7 @@ OUTPUT_DIR   = args.output_dir
 MIN_COVERAGE = args.min_coverage
 CORES        = args.cores
 SAMPLE_SHEET = args.sample_sheet
+MIN_DEPTH    = args.min_depth 
 
 HET_SITES_FILE = os.path.join(OUTPUT_DIR, f"het_sites_{THRESHOLD}.txt")
 MATRIX_OUT     = os.path.join(OUTPUT_DIR, f"master_genotype_matrix_{THRESHOLD}.tsv")
@@ -215,7 +220,6 @@ def cleanup(sample_ids: list):
     if os.path.exists(TEMP_DIR) and not os.listdir(TEMP_DIR):
         os.rmdir(TEMP_DIR)
 
-
 # ---------------------------------------------------------------------------
 # Phase 1 — Load HET Sites into Python Set
 # ---------------------------------------------------------------------------
@@ -259,19 +263,21 @@ def process_single_sample(args_tuple) -> tuple:
     Worker function for Phase 2 parallelization.
     Each worker receives its own copy of the HET sites set.
     Streams through one sample file and writes matching sites to a temp file.
-
+    Base calls with read depth below min_depth are written as NA.
+    
     Memory per worker: size of HET set (~1GB at 0.25, ~30GB at 0.05)
     Returns (sample_id, match_count).
     """
-    file_path, sample_id, het_sites, base_col, temp_dir, chunk_size = args_tuple
+    file_path, sample_id, het_sites, base_col, temp_dir, chunk_size, min_depth = args_tuple
 
     tmp_file = os.path.join(temp_dir, f"{sample_id}_calls.txt")
 
     with gzip.open(file_path, 'rt') as f:
         header = f.readline().strip().split('\t')
-    chr_idx  = header.index('chr')
-    pos_idx  = header.index('pos')
-    base_idx = header.index(base_col)
+    chr_idx   = header.index('chr')
+    pos_idx   = header.index('pos')
+    base_idx  = header.index(base_col)
+    depth_idx = header.index('totDepth')
 
     matches = 0
     buffer  = []
@@ -285,10 +291,11 @@ def process_single_sample(args_tuple) -> tuple:
                     continue
                 site      = parts[chr_idx] + "_" + parts[pos_idx]
                 base_call = parts[base_idx]
+                depth     = int(parts[depth_idx])
 
                 if site in het_sites:
-                    # Normalize UNKNOWN base calls to NA
-                    base_call = "NA" if base_call.strip().upper() == "UNKNOWN" \
+                    # Normalize UNKNOWN base calls and sites with depth lower than minimum to NA 
+                    base_call = "NA" if base_call.strip().upper() == "UNKNOWN" or depth < min_depth \
                                 else base_call
                     buffer.append(f"{site}\t{base_call}\n")
                     matches += 1
@@ -317,7 +324,7 @@ def write_sample_temp_files(sample_files: list, het_sites: set,
 
     worker_args = [
         (f, get_sample_id(f, id_mapping), het_sites,
-         BASE_COL, TEMP_DIR, CHUNK_SIZE)
+         BASE_COL, TEMP_DIR, CHUNK_SIZE, MIN_DEPTH)
         for f in sample_files
     ]
 
@@ -488,6 +495,7 @@ def main():
     print(" Step 2 — Build Genotype Matrix")
     print("=============================================")
     print(f"Threshold        : {THRESHOLD}")
+    print(f"Min depth        : {MIN_DEPTH}")
     print(f"Min coverage     : {MIN_COVERAGE}% "
           f"(= {min_samples} samples out of {len(sample_files)})")
     print(f"Cores            : {CORES}")
