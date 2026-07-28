@@ -12,6 +12,7 @@
 #   Step 2 — Build genotype matrix (02_build_matrix.py)
 #   Step 3 — Filter lethal candidates (03_filter_lethal.py)
 #   Step 4 — Filter by genomic region  (04_filter_regions.py, optional)
+#   Step 5 — Annotate variants          (05_annotate_variants.py, optional)
 #
 # Usage:
 #   python3 00_LethAl_Finder.py \
@@ -31,8 +32,9 @@
 #   master_genotype_matrix_<threshold>.tsv      Full cross-population matrix
 #   lethal_candidates_<threshold>.tsv           Lethal candidate sites
 #   lethal_hits_<threshold>.tsv                 Per-sample carrier events
-#   lethal_candidates_<threshold>_regional.tsv  Region-filtered candidates (if --regions used)
-#   logs/                                       All step logs
+#   lethal_candidates_<threshold>_regional.tsv   Region-filtered candidates (if --regions used)
+#   lethal_candidates_<threshold>_annotated.tsv  Annotated candidates (if --fasta used)
+#   logs/                                        All step logs
 # =============================================================================
 
 import os
@@ -58,6 +60,7 @@ Examples:
   python3 00_LethAl_Finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --skip-step1
   python3 00_LethAl_Finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --sample-sheet samples.tsv
   python3 00_LethAl_Finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --regions genome.gff --feature exon
+  python3 00_LethAl_Finder.py --input-dir /data/hearty --output-dir /results --threshold 0.25 --regions genome.gff --fasta ref.fna
     """
 )
 parser.add_argument("--input-dir",    required=True,
@@ -83,12 +86,25 @@ parser.add_argument("--min-carriers", type=int, default=1,
                          "for it to be considered a lethal candidate (default: 1)")
 parser.add_argument("--skip-step3",   action="store_true",
                     help="Skip Step 3 — use existing lethal candidates file in output directory")
+parser.add_argument("--skip-step4",   action="store_true",
+                    help="Skip Step 4 — use existing regional candidates file in output directory")
 parser.add_argument("--regions",      default=None,
                     help="Optional BED/GFF/GFF3/GTF file to filter lethal candidates "
                          "to specific genomic regions (e.g. exons)")
 parser.add_argument("--feature",      type=str, default="exon",
                     help="Feature type to extract from GFF/GTF files "
                          "(default: exon). Ignored for BED files.")
+parser.add_argument("--min-depth",    type=int, default=10,
+                    help="Minimum read depth (totDepth) required at a site for a sample's "
+                         "base call to be included in the matrix. Calls below this threshold "
+                         "are written as NA (default: 10)")
+parser.add_argument("--max-alleles",  type=int, default=None,
+                    help="Maximum number of unique alleles allowed across all individuals "
+                         "at a site. Sites exceeding this limit are excluded as potential "
+                         "noise or mapping artifacts (default: no limit)")
+parser.add_argument("--fasta",        default=None,
+                    help="Reference FASTA file (.fna) with .fai index — required to run "
+                         "Step 5 variant annotation (requires --regions GFF3)")
 args = parser.parse_args()
 
 
@@ -105,16 +121,21 @@ SAMPLE_SHEET = args.sample_sheet
 SKIP_STEP1   = args.skip_step1
 SKIP_STEP2   = args.skip_step2
 SKIP_STEP3   = args.skip_step3
+SKIP_STEP4   = args.skip_step4
 MIN_CARRIERS = args.min_carriers
 REGIONS      = args.regions
 FEATURE      = args.feature
+MIN_DEPTH    = args.min_depth
+MAX_ALLELES  = args.max_alleles
+FASTA        = args.fasta
 
 LOG_DIR        = os.path.join(OUTPUT_DIR, "logs")
 HET_SITES_FILE = os.path.join(OUTPUT_DIR, f"het_sites_{THRESHOLD}.txt")
 MATRIX_FILE    = os.path.join(OUTPUT_DIR, f"master_genotype_matrix_{THRESHOLD}.tsv")
 CANDIDATES_OUT = os.path.join(OUTPUT_DIR, f"lethal_candidates_{THRESHOLD}.tsv")
 HITS_OUT       = os.path.join(OUTPUT_DIR, f"lethal_hits_{THRESHOLD}.tsv")
-REGIONAL_OUT = os.path.join(OUTPUT_DIR, f"lethal_candidates_{THRESHOLD}_regional.tsv")
+REGIONAL_OUT   = os.path.join(OUTPUT_DIR, f"lethal_candidates_{THRESHOLD}_regional.tsv")
+ANNOTATED_OUT  = os.path.join(OUTPUT_DIR, f"lethal_candidates_{THRESHOLD}_annotated.tsv")
 
 # Locate step scripts relative to this master script
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -122,6 +143,7 @@ STEP1_SCRIPT = os.path.join(SCRIPT_DIR, "01_collect_het_sites.sh")
 STEP2_SCRIPT = os.path.join(SCRIPT_DIR, "02_build_matrix.py")
 STEP3_SCRIPT = os.path.join(SCRIPT_DIR, "03_filter_lethal.py")
 STEP4_SCRIPT = os.path.join(SCRIPT_DIR, "04_filter_regions.py")
+STEP5_SCRIPT = os.path.join(SCRIPT_DIR, "05_annotate_variants.py")
 
 # Track timing per step
 STEP_TIMES = {}
@@ -191,7 +213,7 @@ def validate_inputs():
     if SAMPLE_SHEET and not os.path.isfile(SAMPLE_SHEET):
         errors.append(f"Sample sheet not found: {SAMPLE_SHEET}")
 
-    for script in [STEP1_SCRIPT, STEP2_SCRIPT, STEP3_SCRIPT, STEP4_SCRIPT]:
+    for script in [STEP1_SCRIPT, STEP2_SCRIPT, STEP3_SCRIPT, STEP4_SCRIPT, STEP5_SCRIPT]:
         if not os.path.isfile(script):
             errors.append(f"Step script not found: {script}")
 
@@ -210,6 +232,10 @@ def validate_inputs():
     if SKIP_STEP3 and not os.path.isfile(CANDIDATES_OUT):
         errors.append(f"--skip-step3 set but candidates file not found: "
                       f"{CANDIDATES_OUT}")
+
+    if SKIP_STEP4 and not os.path.isfile(REGIONAL_OUT):
+        errors.append(f"--skip-step4 set but regional candidates file not found: "
+                      f"{REGIONAL_OUT}")
 
     if errors:
         print("\n[ERROR] Validation failed:")
@@ -298,6 +324,7 @@ def run_step2():
         INPUT_DIR,
         OUTPUT_DIR,
         "--min-coverage", str(MIN_COVERAGE),
+        "--min-depth",    str(MIN_DEPTH),
         "--cores",        str(CORES),
     ]
     if SAMPLE_SHEET:
@@ -313,6 +340,8 @@ def run_step3():
         OUTPUT_DIR,
         "--min-carriers", str(MIN_CARRIERS),
     ]
+    if MAX_ALLELES is not None:
+        cmd += ["--max-alleles", str(MAX_ALLELES)]
     run_step("Step 3", cmd)
 
 def run_step4():
@@ -326,6 +355,20 @@ def run_step4():
         "--cores",   str(CORES),
     ]
     run_step("Step 4", cmd)
+
+
+def run_step5():
+    """Call 05_annotate_variants.py with the required arguments."""
+    cmd = [
+        "python3", STEP5_SCRIPT,
+        THRESHOLD,
+        OUTPUT_DIR,
+        REGIONS,
+        "--fasta",  FASTA,
+        "--cores",  str(CORES),
+    ]
+    run_step("Step 5", cmd)
+
 
 # ---------------------------------------------------------------------------
 # Final Summary
@@ -343,7 +386,7 @@ def print_summary():
     print("")
 
     print("  Output files:")
-    for f in [HET_SITES_FILE, MATRIX_FILE, CANDIDATES_OUT, HITS_OUT, REGIONAL_OUT]:
+    for f in [HET_SITES_FILE, MATRIX_FILE, CANDIDATES_OUT, HITS_OUT, REGIONAL_OUT, ANNOTATED_OUT]:
         if os.path.isfile(f):
             size = os.path.getsize(f) / 1e9
             print(f"    {os.path.basename(f):<45} {size:.2f} GB")
@@ -382,8 +425,12 @@ def main():
     print(f"  Skip Step 1      : {SKIP_STEP1}")
     print(f"  Skip Step 2      : {SKIP_STEP2}")
     print(f"  Skip Step 3      : {SKIP_STEP3}")
+    print(f"  Skip Step 4      : {SKIP_STEP4}")
+    print(f"  Min depth        : {MIN_DEPTH}")
+    print(f"  Max alleles      : {MAX_ALLELES if MAX_ALLELES is not None else 'No limit'}")
     print(f"  Regions file     : {REGIONS if REGIONS else 'Not provided'}")
     print(f"  Feature type     : {FEATURE}")
+    print(f"  Reference FASTA  : {FASTA if FASTA else 'Not provided (Step 5 will be skipped)'}")
     print(f"  Timestamp        : {datetime.datetime.now()}")
 
     # Validate all inputs
@@ -422,7 +469,16 @@ def main():
 
     # Step 4 — Filter by genomic region (optional)
     if REGIONS:
-        run_step4()  
+        if SKIP_STEP4:
+            banner("Step 4 — Filter by Genomic Region")
+            log(f"Skipping — using existing file: {REGIONAL_OUT}")
+            STEP_TIMES["Step 4"] = datetime.timedelta(0)
+        else:
+            run_step4()
+
+    # Step 5 — Annotate variants (optional — requires --fasta and --regions GFF3)
+    if FASTA and REGIONS:
+        run_step5()
 
     # Final summary
     print_summary()
